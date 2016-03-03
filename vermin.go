@@ -11,8 +11,10 @@ import (
 	"github.com/jackdanger/collectlinks"
 )
 
-//map to store visited uri's to avoid visit loops.
+// map for storing visited uri's to avoid visit loops.
 var visited = make(map[string]bool)
+
+// map for storing found dead links.
 var deadLinks = make(map[string]error)
 
 func main() {
@@ -35,14 +37,14 @@ func main() {
 		queue <- args[0]
 	}()
 	for uri := range queue {
-		enqueue(uri, queue)
+		queueLinks(uri, queue)
 	}
 	fmt.Println("visited: ", visited)
 	//fmt.Println(deadLinks, "[Broken]")
 }
 
-//enqueue links
-func enqueue(uri string, queue chan string) {
+// queue found links for processing and checking.
+func queueLinks(uri string, queue chan string) {
 	//fmt.Println("Fetching", uri)
 
 	//store & tag uri as visited.
@@ -62,21 +64,19 @@ func enqueue(uri string, queue chan string) {
 		fmt.Println(deadLinks)
 		return
 	}
-	/*bytes, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Println("bytes Error: ", err)
-		return
-	}*/
 
 	//fmt.Println("response body ", resp)
 	defer resp.Body.Close()
+
+	// collectlinks package helps in parsing a webpage & returning found
+	// hyperlink href.
 	links := collectlinks.All(resp.Body)
 	//fmt.Println("links:", links)
 	for _, link := range links {
 
 		absolute := fixURL(link, uri)
 		if uri != "" {
-			//dont enqueue a uri twice.
+			//dont queue a uri twice.
 			if !visited[absolute] {
 				go func() { queue <- absolute }()
 				//	fmt.Println("channel queue:", queue)
