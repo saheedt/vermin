@@ -1,69 +1,119 @@
 package main
 
 import (
-	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
+	"strings"
+	"time"
 
 	"github.com/jackdanger/collectlinks"
 )
 
-// map for storing visited uri's to avoid visit loops.
+// visited is a map for storing visited uri's to avoid visit loops.
 var visited = make(map[string]bool)
 
-// map for storing found dead links.
-var deadLinks = make(map[string]error)
+//  deadLinks is a slice for storing found dead links.
+var deadLinks = []error{}
 
+/*var httpTransport = &http.Transport{
+	TLSClientConfig: &tls.Config{
+		InsecureSkipVerify: true,
+	},
+}*/
+
+var httpClient http.Client
+
+//main function
 func main() {
+
+	var link = flag.String("url", "", "Url to crawl for dead links")
+	var boolflag = flag.Bool("hostonly", true, "flag to crawl none base host. Defaults to true")
+
 	flag.Parse()
-
-	args := flag.Args()
-
-	fmt.Println("Start Page:", args)
-
-	//check if an arg was passed along.
-	if len(args) < 1 {
-		fmt.Println("Specify a start page")
-		os.Exit(1)
-	}
 
 	queue := make(chan string)
 
-	//put arg into channel for queuing.
+	fmt.Println("flag value:", *link)
+
+	// Go routine puts url flag into channel for queuing.
 	go func() {
-		queue <- args[0]
+		queue <- *link
 	}()
-	for uri := range queue {
-		queueLinks(uri, queue)
+
+	hostURL, err := url.Parse(*link)
+	if err != nil {
+		//fmt.Println("Invalid Url: ", err)
+		return
 	}
-	fmt.Println("visited: ", visited)
-	//fmt.Println(deadLinks, "[Broken]")
+
+	for {
+		select {
+		case uri, ok := <-queue:
+			if !ok {
+				return
+			}
+
+			queueLinks(hostURL.Host, uri, queue, *boolflag)
+
+		case <-time.After(1 * time.Minute):
+			fmt.Println("Ending crawler. Goodbye!")
+			fmt.Println("--------------------DEAD LINKS------------------------------")
+
+			for _, f := range deadLinks {
+				fmt.Println(f)
+			}
+
+			fmt.Println("------------------------------------------------------------")
+
+			return
+		}
+	}
+
+	// for uri := range queue {
+	// 	queueLinks(hostURL.Host, uri, queue, *boolflag)
+	// }
+
 }
 
-// queue found links for processing and checking.
-func queueLinks(uri string, queue chan string) {
-	//fmt.Println("Fetching", uri)
+// queueLinks is used for making http calls to the queued links in queue channel
 
-	//store & tag uri as visited.
-	visited[uri] = true
-	httpTransport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-		},
+func queueLinks(host, uri string, queue chan string, boolflag bool) {
+	if visited[uri] {
+		return
 	}
 
-	httpClient := http.Client{Transport: httpTransport}
+	crawledURL, _ := url.Parse(uri)
+
+	if boolflag {
+		if !strings.Contains(crawledURL.Host, host) {
+			// fmt.Println("Current url host name doesn't match base url host name.")
+			return
+		}
+	}
+
+	fmt.Printf("Fetching: %s\n", uri)
+
+	// store & tag uri as visited.
+	visited[uri] = true
 
 	resp, err := httpClient.Get(uri)
 	if err != nil {
-		fmt.Println("resp Error: ", err)
-		deadLinks["Possible dead link :"] = err
-		fmt.Println(deadLinks)
+		fmt.Printf(`Host: %s
+URI: %s
+Error: %s
+
+`, host, uri, err.Error())
+
+		// fmt.Println("resp Error: ", err)
+		//deadLinks["Possible dead link :"] = err
+		deadLinks = append(deadLinks, err)
 		return
 	}
+
+	fmt.Println("")
 
 	//fmt.Println("response body ", resp)
 	defer resp.Body.Close()
@@ -71,31 +121,43 @@ func queueLinks(uri string, queue chan string) {
 	// collectlinks package helps in parsing a webpage & returning found
 	// hyperlink href.
 	links := collectlinks.All(resp.Body)
-	//fmt.Println("links:", links)
+
 	for _, link := range links {
 
-		absolute := fixURL(link, uri)
-		if uri != "" {
-			//dont queue a uri twice.
-			if !visited[absolute] {
-				go func() { queue <- absolute }()
-				//	fmt.Println("channel queue:", queue)
-			}
+		absolute, err := fixURL(link, uri)
+		if err != nil {
+			fmt.Println("link error: ", err)
+			continue
 		}
+
+		// dont queue a uri twice.
+		go func() {
+			queue <- absolute
+		}()
 	}
 }
 
-//fix url
-func fixURL(href, base string) string {
+// fix url
+func fixURL(href, base string) (string, error) {
 	uri, err := url.Parse(href)
 	if err != nil {
-		return ""
+		return "", errors.New("link error")
 	}
+
 	baseURL, err := url.Parse(base)
 	if err != nil {
-		return ""
+		return "", errors.New("Link error")
 	}
+
 	uri = baseURL.ResolveReference(uri)
-	//fmt.Println("fixed:", uri)
-	return uri.String()
+	//fmt.Println("uri without string: ", uri)
+
+	/*if !boolflag {
+		if uri.Host != baseURL.Host {
+			return "", errors.New("External Link")
+		}
+	}*/
+
+	//fmt.Println("resolvedURL:", uri.String())
+	return uri.String(), err
 }
